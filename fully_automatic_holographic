@@ -1,0 +1,59 @@
+#!/nix/store/37mly3rqq15i0axhcx3258bl34l51psp-hermes-agent-env/bin/python3.12
+"""Patched Hermes launcher — activates holographic-fork patches before boot.
+
+Prepends ~/.hermes/patches to sys.path so patched modules (background_review,
+conversation_loop, agent_init, _bg_review_spinner) shadow the Nix-store
+originals, then pre-imports agent to cache it before the boot chain runs.
+
+Usage:
+    ~/Code/hermes/fully_automatic_holographic [args...]
+"""
+import os
+import sys
+
+PATCHES_DIR = os.path.expanduser("~/.hermes/patches")
+if PATCHES_DIR not in sys.path:
+    sys.path.insert(0, PATCHES_DIR)
+
+# Pre-import agent from patches to cache it before the boot chain runs.
+# Without this, hermes_cli/config.py → providers → nous plugin → agent
+# loads agent from the Nix store (sys.path gets reordered mid-chain).
+import agent  # noqa: F401
+
+# Also pre-import agent.portal_tags (the specific import the Nous plugin needs)
+# so the boot chain finds it cached and doesn't try to import agent again.
+try:
+    import agent.portal_tags  # noqa: F401
+except Exception:
+    pass  # may not exist in all Hermes versions
+
+# Replicate env vars from the original bash wrapper
+os.environ.setdefault("HERMES_BUNDLED_SKILLS",
+    "/nix/store/817z65f6yzziz4dx23i8irswsx51rdld-hermes-agent-0.14.0/share/hermes-agent/skills")
+os.environ.setdefault("HERMES_BUNDLED_PLUGINS",
+    "/nix/store/817z65f6yzziz4dx23i8irswsx51rdld-hermes-agent-0.14.0/share/hermes-agent/plugins")
+os.environ.setdefault("HERMES_WEB_DIST",
+    "/nix/store/817z65f6yzziz4dx23i8irswsx51rdld-hermes-agent-0.14.0/share/hermes-agent/web_dist")
+os.environ.setdefault("HERMES_TUI_DIR",
+    "/nix/store/817z65f6yzziz4dx23i8irswsx51rdld-hermes-agent-0.14.0/ui-tui")
+os.environ.setdefault("HERMES_REVISION",
+    "5672772dabc2dea50075fc10f99833f01dd156fb")
+
+_path_additions = [
+    "/nix/store/h2barca1k5pmvcyl9fwrzwrb4cn1b248-nodejs-22.22.2/bin",
+    "/nix/store/922crn2k3v8yaqk7anps80hba919lnds-ripgrep-15.1.0/bin",
+    "/nix/store/7yvcckar1lzhqnr0xx2n19nsdjd4qa4d-git-2.53.0/bin",
+    "/nix/store/h8x05b58m7vp5ym85h28w0skhvg25rha-openssh-10.2p1/bin",
+    "/nix/store/7dbsj28w2vc1p8yzxc94p9sssjqiibb7-ffmpeg-8.0.1-bin/bin",
+    "/nix/store/6xjzxszbw29x1ksap3f2cxskh64mn5yg-tirith-0.2.10/bin",
+    "/nix/store/sv88k8q6mjhlnch2676bjbryhjaf9kqd-wl-clipboard-2.3.0/bin",
+    "/nix/store/ljbwcgfwilqzhqfzpkphghn4w7mw6lqj-xclip-0.13/bin",
+]
+_cur_path = os.environ.get("PATH", "")
+for _p in _path_additions:
+    if _p not in _cur_path:
+        _cur_path = _p + ":" + _cur_path
+os.environ["PATH"] = _cur_path
+
+from hermes_cli.main import main
+sys.exit(main())

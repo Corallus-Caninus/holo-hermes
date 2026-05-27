@@ -38,9 +38,10 @@ The installer will:
 3. **Create entry point wrappers** at `~/.local/bin/hermes` and `~/.local/bin/hermes-agent`
 4. **Auto-configure `~/.hermes/config.yaml`** — merges the required `memory:` and `plugins:` settings using the Hermes Python's PyYAML (preserves all your existing settings)
 
-### Config changes
+### Config changes (auto-applied by install.sh)
 
-Add to `~/.hermes/config.yaml`:
+The installer automatically merges these settings into `~/.hermes/config.yaml`
+using the Hermes Python's PyYAML — no manual editing needed:
 
 ```yaml
 memory:
@@ -54,6 +55,9 @@ plugins:
     auto_extract: true
     min_trust_threshold: 0.1
 ```
+
+Existing settings in your config are preserved — only these specific keys
+are added or updated.
 
 ### Usage
 
@@ -197,8 +201,12 @@ cp ~/Code/hermes/holo-hermes/patches/agent/agent_init.py /path/to/site-packages/
 cp ~/Code/hermes/holo-hermes/patches/plugins/memory/holographic/__init__.py /path/to/site-packages/plugins/memory/holographic/
 ```
 
-Then add the [config changes](#config-changes) to `~/.hermes/config.yaml` and run
-`hermes` normally.
+Then apply the [config changes](#config-changes-auto-applied-by-installsh) to
+`~/.hermes/config.yaml` manually and run `hermes` normally.
+
+> Note: the auto-config step in `install.sh` only works for Nix Hermes (it
+> uses the Hermes Python's PyYAML). For non-Nix installs, just copy-paste
+> the YAML snippet from the config section above into your `~/.hermes/config.yaml`.
 
 > Note: the proxy package files (`patches/agent/__init__.py`,
 > `patches/plugins/__init__.py`, `patches/plugins/memory/__init__.py`) are only

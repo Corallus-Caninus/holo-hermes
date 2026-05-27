@@ -32,7 +32,7 @@ echo ""
 NIX_HERMES=""
 for _p in ${PATH//:/ }; do
     _candidate="$_p/hermes"
-    if [[ -f "$_candidate" && "$_candidate" != "$HOME/.local/bin/hermes" && "$_candidate" != "/home/jward/.local/bin/hermes" ]]; then
+    if [[ -f "$_candidate" && "$_candidate" != "$HOME/.local/bin/hermes" ]]; then
         NIX_HERMES="$_candidate"
         break
     fi
@@ -182,3 +182,7 @@ echo "        auto_extract: true"
 echo "        min_trust_threshold: 0.1"
 echo ""
 echo "✓ Install complete. Run: hermes"
+echo ""
+echo "NOTE: If 'hermes' command not found after install, add ~/.local/bin to your PATH:"
+echo '  export PATH="$HOME/.local/bin:$PATH"'
+echo "  (Add to ~/.bashrc or ~/.profile to make it permanent)"

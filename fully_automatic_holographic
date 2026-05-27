@@ -20,11 +20,12 @@ import sys
 # ── 1. Discover Nix Hermes installation ────────────────────────────────────────
 
 def _find_nix_hermes():
-    """Find the Nix ``hermes`` bash wrapper in PATH, skipping user-local ones."""
+    """Find the Nix ``hermes`` bash wrapper in PATH, skipping our custom wrapper."""
+    local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
     for p in os.environ.get("PATH", "").split(os.pathsep):
         candidate = os.path.join(p, "hermes")
-        if os.path.isfile(candidate) and not candidate.startswith(
-            os.path.expanduser("~")
+        if os.path.isfile(candidate) and candidate != os.path.join(
+            local_bin, "hermes"
         ):
             return candidate
     return None

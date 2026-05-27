@@ -1,5 +1,9 @@
 # Holographic Memory Fork — Hermes Agent Patches
 
+> **Platform: NixOS / Nix Hermes only.** These patches override Hermes modules
+> installed via Nix (read-only store). For pip/Docker Hermes installs, you can
+> apply the patches directly — see [Non-Nix Hermes](#non-nix-hermes) below.
+
 Replaces the flat-file `MEMORY.md`/`USER.md` store with the holographic
 `fact_store` (SQLite + FTS5 + HRR vector retrieval). Background review
 writes to `fact_store` every turn. Injects relevant facts per turn into
@@ -15,7 +19,7 @@ the ephemeral system prompt via a char-budget prefetch (min 20 facts,
   nix profile install github:NousResearch/hermes-agent
   ```
 - `gh` authenticated or SSH key set up for GitHub
-- `~/.local/bin` should be early in your `PATH`
+- `~/.local/bin` should be early in your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` or `~/.profile` if not already there)
 
 ### Install
 
@@ -170,3 +174,33 @@ exec "$HERMES_PYTHON" "$PATCHED_ENTRY" "$@"
    Fixed: detach `_memory_manager` before review cleanup.
 4. **Background review spinner `NameError: name 'time' is not defined`** —
    extracted spinner class was missing imports. Fixed: added `os`, `threading`, `time`.
+
+## Non-Nix Hermes
+
+If you installed Hermes via pip, Docker, or another method (not Nix), the
+patches still work — you just don't need the entry-point wrapper approach.
+Instead, copy the patches into your Hermes Python environment directly:
+
+```bash
+# Find where Hermes is installed
+python3 -c "import agent; print(agent.__file__)"
+# e.g. /usr/lib/python3.12/site-packages/agent/__init__.py
+
+# Clone the repo
+git clone https://github.com/Corallus-Caninus/holo-hermes.git ~/Code/hermes/holo-hermes
+
+# Copy patches over the originals (overwrites specific files)
+cp ~/Code/hermes/holo-hermes/patches/agent/background_review.py /path/to/site-packages/agent/
+cp ~/Code/hermes/holo-hermes/patches/agent/conversation_loop.py /path/to/site-packages/agent/
+cp ~/Code/hermes/holo-hermes/patches/agent/system_prompt.py /path/to/site-packages/agent/
+cp ~/Code/hermes/holo-hermes/patches/agent/agent_init.py /path/to/site-packages/agent/
+cp ~/Code/hermes/holo-hermes/patches/plugins/memory/holographic/__init__.py /path/to/site-packages/plugins/memory/holographic/
+```
+
+Then add the [config changes](#config-changes) to `~/.hermes/config.yaml` and run
+`hermes` normally.
+
+> Note: the proxy package files (`patches/agent/__init__.py`,
+> `patches/plugins/__init__.py`, `patches/plugins/memory/__init__.py`) are only
+> needed for the Nix sys.path-override mechanism. For pip installs you can
+> skip them and replace files directly.

@@ -62,8 +62,12 @@ PATCHES_DST="$HOME/.hermes/patches"
 mkdir -p "$HOME/.hermes"
 if [[ -d "$PATCHES_DST" ]]; then
     echo "  Patches directory already exists at $PATCHES_DST"
-    echo "  Updating with rsync..."
-    rsync -a --delete "$PATCHES_SRC/" "$PATCHES_DST/"
+    echo "  Updating..."
+    if command -v rsync &>/dev/null; then
+        rsync -a --delete "$PATCHES_SRC/" "$PATCHES_DST/"
+    else
+        cp -r "$PATCHES_SRC/"* "$PATCHES_DST/"
+    fi
 else
     cp -r "$PATCHES_SRC" "$PATCHES_DST"
 fi
@@ -91,11 +95,16 @@ mkdir -p "$HOME/.local/bin"
 HERMES_AGENT_DST="$HOME/.local/bin/hermes-agent"
 
 if [[ -f "$HERMES_AGENT_DST" ]] && [[ -z "$FORCE" ]]; then
-    echo "  WARNING: $HERMES_AGENT_DST already exists."
-    echo "  Overwrite? [y/N] "
-    read -r _ans
-    if [[ ! "$_ans" =~ ^[yY] ]]; then
-        echo "  Skipping hermes-agent."
+    if [[ -t 0 ]]; then
+        echo "  WARNING: $HERMES_AGENT_DST already exists."
+        echo "  Overwrite? [y/N] "
+        read -r _ans || true
+        if [[ ! "$_ans" =~ ^[yY] ]]; then
+            echo "  Skipping hermes-agent."
+            SKIP_AGENT=1
+        fi
+    else
+        echo "  $HERMES_AGENT_DST already exists (non-interactive — skipping)"
         SKIP_AGENT=1
     fi
 fi
@@ -126,11 +135,16 @@ fi
 HERMES_DST="$HOME/.local/bin/hermes"
 
 if [[ -f "$HERMES_DST" ]] && [[ -z "$FORCE" ]]; then
-    echo "  WARNING: $HERMES_DST already exists."
-    echo "  Overwrite? [y/N] "
-    read -r _ans
-    if [[ ! "$_ans" =~ ^[yY] ]]; then
-        echo "  Skipping hermes bash wrapper."
+    if [[ -t 0 ]]; then
+        echo "  WARNING: $HERMES_DST already exists."
+        echo "  Overwrite? [y/N] "
+        read -r _ans || true
+        if [[ ! "$_ans" =~ ^[yY] ]]; then
+            echo "  Skipping hermes bash wrapper."
+            SKIP_WRAPPER=1
+        fi
+    else
+        echo "  $HERMES_DST already exists (non-interactive — skipping)"
         SKIP_WRAPPER=1
     fi
 fi

@@ -36,7 +36,7 @@ The installer will:
 1. **Detect your Nix Hermes installation** — auto-discovers store paths
 2. **Copy patches** to `~/.hermes/patches/`
 3. **Create entry point wrappers** at `~/.local/bin/hermes` and `~/.local/bin/hermes-agent`
-4. **Remind you** to update `~/.hermes/config.yaml`
+4. **Auto-configure `~/.hermes/config.yaml`** — merges the required `memory:` and `plugins:` settings using the Hermes Python's PyYAML (preserves all your existing settings)
 
 ### Config changes
 

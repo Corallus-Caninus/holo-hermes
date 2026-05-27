@@ -163,23 +163,57 @@ BEOF
     echo "✓ Created $HERMES_DST"
 fi
 
-# ── Step 4: Remind about config.yaml ──────────────────────────────────────────
+# ── Step 4: Auto-configure ~/.hermes/config.yaml ───────────────────────────────
 
 echo ""
-echo "◆ Next step: update ~/.hermes/config.yaml"
-echo ""
-echo "  Add or edit these settings:"
-echo ""
-echo "    memory:"
-echo "      memory_enabled: false"
-echo "      user_profile_enabled: false"
-echo "      provider: holographic"
-echo "      nudge_interval: 1"
-echo ""
-echo "    plugins:"
-echo "      hermes-memory-store:"
-echo "        auto_extract: true"
-echo "        min_trust_threshold: 0.1"
+echo "◆ Configuring ~/.hermes/config.yaml..."
+
+"$HERMES_PYTHON" -c "
+import os, yaml
+
+config_path = os.path.expanduser('~/.hermes/config.yaml')
+
+# Load existing config or start fresh
+if os.path.exists(config_path):
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+else:
+    config = {}
+
+# Track what changed
+changes = []
+
+# Merge memory section
+mem = config.setdefault('memory', {})
+for key, val in [('memory_enabled', False), ('user_profile_enabled', False),
+                  ('provider', 'holographic'), ('nudge_interval', 1)]:
+    old = mem.get(key)
+    mem[key] = val
+    if old != val:
+        changes.append(f'  memory.{key}: {old} -> {val}' if old is not None else f'  memory.{key}: {val}')
+
+# Merge plugins section
+plugins = config.setdefault('plugins', {})
+hms = plugins.setdefault('hermes-memory-store', {})
+for key, val in [('auto_extract', True), ('min_trust_threshold', 0.1)]:
+    old = hms.get(key)
+    hms[key] = val
+    if old != val:
+        changes.append(f'  plugins.hermes-memory-store.{key}: {old} -> {val}' if old is not None else f'  plugins.hermes-memory-store.{key}: {val}')
+
+with open(config_path, 'w') as f:
+    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+if changes:
+    print('  Updated:')
+    for c in changes:
+        print(c)
+else:
+    print('  Already configured — no changes needed.')
+" 2>&1
+
+echo "✓ Config updated at ~/.hermes/config.yaml"
+
 echo ""
 echo "✓ Install complete. Run: hermes"
 echo ""

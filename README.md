@@ -1,28 +1,42 @@
 # Holographic Memory Fork — Hermes Agent Patches
 
-Replaces the flat-file MEMORY.md/USER.md store with the holographic
+Replaces the flat-file `MEMORY.md`/`USER.md` store with the holographic
 `fact_store` (SQLite + FTS5 + HRR vector retrieval). Background review
-writes to fact_store every turn. Injects relevant facts per turn into
+writes to `fact_store` every turn. Injects relevant facts per turn into
 the ephemeral system prompt via a char-budget prefetch (min 20 facts,
 ~5000 char target, score-gated).
 
-## Files
+## Quick Install
 
-| Path | What it does |
-|------|-------------|
-| `patches/agent/__init__.py` | Proxy package: extends `__path__` so patched submodules shadow Nix-store originals |
-| `patches/agent/agent_init.py` | Strips dead MemoryStore init block; keeps `nudge_interval` from config |
-| `patches/agent/background_review.py` | Cursor-safe TTY spinner; detaches `_memory_manager` before shutdown to avoid destroying parent's provider |
-| `patches/agent/_bg_review_spinner.py` | Custom spinner writing to `/dev/tty` with ANSI cursor-save/restore (doesn't overwrite input box) |
-| `patches/agent/context_compressor.py` | Updated compression notes referencing holographic store |
-| `patches/agent/conversation_loop.py` | Injects prefetched facts into `ephemeral_system_prompt` each turn; fixed review trigger gate and exec globals; prefetch query includes previous assistant response + reasoning/thinking |
-| `patches/agent/system_prompt.py` | Replaced `MEMORY_GUIDANCE` with `FACT_STORE_GUIDANCE` |
-| `patches/plugins/__init__.py` | (empty) |
-| `patches/plugins/memory/__init__.py` | Proxy package: extends `__path__`, re-exports from real module, overrides `_MEMORY_PLUGINS_DIR` |
-| `patches/plugins/memory/holographic/__init__.py` | Char-budget prefetch (min 20 facts, ~5000 char target, score >= 0.15); lazy-init guard if `_store` is None; top-5 in cached system prompt |
-| `fully_automatic_holographic` | Launcher script: proactive import hack to load patches before Nix-store boot chain |
+### Prerequisites
 
-## Config changes (config.yaml)
+- A working [Hermes Agent](https://github.com/NousResearch/hermes-agent) Nix install:
+  ```bash
+  nix profile install github:NousResearch/hermes-agent
+  ```
+- `gh` authenticated or SSH key set up for GitHub
+- `~/.local/bin` should be early in your `PATH`
+
+### Install
+
+```bash
+# Clone the repo
+git clone https://github.com/Corallus-Caninus/holo-hermes.git ~/Code/hermes/holo-hermes
+
+# Run the installer
+~/Code/hermes/holo-hermes/install.sh
+```
+
+The installer will:
+
+1. **Detect your Nix Hermes installation** — auto-discovers store paths
+2. **Copy patches** to `~/.hermes/patches/`
+3. **Create entry point wrappers** at `~/.local/bin/hermes` and `~/.local/bin/hermes-agent`
+4. **Remind you** to update `~/.hermes/config.yaml`
+
+### Config changes
+
+Add to `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
@@ -37,11 +51,111 @@ plugins:
     min_trust_threshold: 0.1
 ```
 
-## Usage
+### Usage
 
 ```bash
-~/Code/hermes/fully_automatic_holographic
+hermes
 ```
+
+That's it — the `~/.local/bin/hermes` wrapper takes precedence over the Nix store
+version, injects the patches, and launches Hermes normally.
+
+---
+
+## How It Works
+
+### Architecture
+
+```
+                    ~/.local/bin/hermes (bash wrapper)
+                    │
+                    │  sets HERMES_* env vars from Nix store paths
+                    │  execs ~/.local/bin/hermes-agent
+                    ▼
+         ~/.local/bin/hermes-agent (Python entry point)
+                    │
+                    │  inserts ~/.hermes/patches into sys.path
+                    │  calls hermes_cli.main:main()
+                    ▼
+              Hermes boots normally
+                    │
+                    │  Python import order:
+                    │  sys.path[0] = ~/.hermes/patches  ← wins over Nix store
+                    ▼
+         agent.background_review  ✓ patched
+         agent.conversation_loop  ✓ patched
+         agent.system_prompt      ✓ patched
+         plugins.memory.holographic  ✓ patched
+```
+
+### Why entry point wrappers?
+
+Nix Hermes is installed in the read-only Nix store. The `~/.local/bin/hermes`
+wrapper intercepts the launch and inserts our patched modules into Python's
+import path *before* the boot chain loads the originals.
+
+The `~/.hermes/patches/` directory contains proxy packages that shadow the
+Nix-store originals via `__path__` extension and direct replacement of key
+modules (background_review, conversation_loop, system_prompt, holographic
+memory plugin).
+
+### Manual install (if install.sh doesn't cut it)
+
+If `install.sh` doesn't work for your setup, here's what it does manually:
+
+**1. Copy patches:**
+```bash
+cp -r ~/Code/hermes/holo-hermes/patches ~/.hermes/patches
+rm -rf ~/.hermes/patches/*/__pycache__
+```
+
+**2. Find your Nix Hermes Python:**
+```bash
+grep HERMES_PYTHON "$(which hermes)"
+# Should output something like:
+# export HERMES_PYTHON='/nix/store/xxx...xx-hermes-agent-env/bin/python3'
+```
+
+**3. Create `~/.local/bin/hermes-agent`** (Python entry point):
+```python
+#!/usr/bin/env python3
+import os, sys
+patch_dir = os.path.expanduser("~/.hermes/patches")
+if patch_dir not in sys.path:
+    sys.path.insert(0, patch_dir)
+from hermes_cli.main import main
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**4. Create `~/.local/bin/hermes`** (bash wrapper):
+```bash
+#!/usr/bin/env bash
+# Copy the export lines from your Nix hermes wrapper:
+#   $(which hermes) | head -30
+# Then add:
+PATCHED_ENTRY="$HOME/.local/bin/hermes-agent"
+exec "$HERMES_PYTHON" "$PATCHED_ENTRY" "$@"
+```
+
+---
+
+## Files
+
+| Path | What it does |
+|------|-------------|
+| `install.sh` | Auto-installer — detects Nix paths, copies patches, creates wrappers |
+| `fully_automatic_holographic` | Standalone launcher (alternative to bash wrapper approach) |
+| `patches/agent/__init__.py` | Proxy package: extends `__path__` so patched submodules shadow Nix-store originals |
+| `patches/agent/agent_init.py` | Strips dead MemoryStore init block; keeps `nudge_interval` from config |
+| `patches/agent/background_review.py` | Cursor-safe TTY spinner; detaches `_memory_manager` before shutdown to avoid destroying parent's provider |
+| `patches/agent/_bg_review_spinner.py` | Custom spinner writing to `/dev/tty` with ANSI cursor-save/restore (doesn't overwrite input box) |
+| `patches/agent/context_compressor.py` | Updated compression notes referencing holographic store |
+| `patches/agent/conversation_loop.py` | Injects prefetched facts into `ephemeral_system_prompt` each turn; fixed review trigger gate and exec globals; prefetch query includes previous assistant response + reasoning/thinking |
+| `patches/agent/system_prompt.py` | Replaced `MEMORY_GUIDANCE` with `FACT_STORE_GUIDANCE` |
+| `patches/plugins/__init__.py` | (empty) |
+| `patches/plugins/memory/__init__.py` | Proxy package: extends `__path__`, re-exports from real module, overrides `_MEMORY_PLUGINS_DIR` |
+| `patches/plugins/memory/holographic/__init__.py` | Char-budget prefetch (min 20 facts, ~5000 char target, score >= 0.15); lazy-init guard if `_store` is None; top-5 in cached system prompt |
 
 ## Bugs fixed along the way
 

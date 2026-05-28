@@ -50,6 +50,9 @@ _FACT_EXTRACTION_PROMPT = (
     "  ]\n"
     "}\n\n"
     "Rules:\n"
+    "- Check the assistant's [thinking] block too — that often contains\n"
+    "  user preferences, project decisions, and environment details that\n"
+    "  didn't make it into the final response.\n"
     "- Extract any: user preferences, project decisions, environment details,\n"
     "  tool info, architecture choices, or other durable information.\n"
     "- Empty list if nothing to save (rare -- even small signals count).\n"
@@ -70,6 +73,11 @@ _FACT_SCORING_PROMPT = (
     "  ]\n"
     "}\n\n"
     "Rules:\n"
+    "- Look in the assistant's [thinking] block for explicit mentions of\n"
+    "  specific facts (e.g. 'from fact #47: ...', 'per holographic memory: ...').\n"
+    "  Those facts were clearly useful.\n"
+    "- Also check whether the assistant's response draws on a fact's content\n"
+    "  even if the fact ID isn't explicitly named.\n"
     "- A fact is useful if it informed the assistant's response or was contextually relevant.\n"
     "- A fact is not useful if it was irrelevant to the current turn.\n"
     "- `trust_delta` is how much the trust score should change:\n"
@@ -134,8 +142,20 @@ def _build_conversation_text(messages_snapshot: List[Dict]) -> str:
         if isinstance(content, list):
             texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
             content = " ".join(texts)
+        # Include assistant reasoning/thinking — this is where the model
+        # explicitly references prefetched facts ("from fact #47: ...")
+        reasoning = m.get("reasoning", "")
+        if isinstance(reasoning, str) and reasoning.strip():
+            reasoning = reasoning.strip()[:1200]
+        else:
+            reasoning = ""
         if isinstance(content, str) and content.strip():
-            parts.append(f"[{role}]: {content.strip()[:2000]}")
+            full = content.strip()[:800]
+            if role == "assistant" and reasoning:
+                full = f"[thinking]: {reasoning}\n\n{full}"
+            parts.append(f"[{role}]: {full}")
+        elif reasoning:
+            parts.append(f"[{role}]: [thinking]: {reasoning}")
     return "\n\n".join(parts) if parts else "(empty turn)"
 
 
@@ -283,7 +303,7 @@ def _apply_feedback(agent: Any, fact_id: int, useful: bool, trust_delta: float =
     from hermes_constants import get_hermes_home
     db_path = get_hermes_home() / "memory_store.db"
     delta = max(-0.05, min(0.05, trust_delta))
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=8.0)
     try:
         conn.execute(
             "UPDATE facts SET "

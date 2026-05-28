@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/nix/store/37mly3rqq15i0axhcx3258bl34l51psp-hermes-agent-env/bin/python3.12
 """Patched Hermes launcher — activates holographic-fork patches before boot.
 
 Auto-discovers Nix store paths from the ``hermes`` command in PATH, so it

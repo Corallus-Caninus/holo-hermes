@@ -33,7 +33,6 @@ if [ -z "$HERMES_CMD" ]; then
   fi
 fi
 TIMEOUT="${BELT_FED_TIMEOUT:-600}"   # 10 minutes default
-QUIET="-Q"
 
 # ---------------------------------------------------------------------------
 # Read the goal prompt: from first argument, or stdin if piped
@@ -74,39 +73,27 @@ while true; do
   echo "========================================"
 
   # Step 1: Run the goal prompt through Hermes (with timeout).
-  # In -Q mode, hermes suppresses all tool-call progress output.
-  # Only the final model response goes to stdout. Stderr has the
-  # session_id banner.  We capture both and print stdout so the
-  # user can see what the model ultimately produced.
+  # Run directly (not captured) so progress streams to the terminal.
+  # Remove -Q so the tool-call indicators are visible in real time.
+  # The execution output isn't parsed — verification checks completion.
   echo "[belt_fed] Running Hermes (up to ${TIMEOUT}s)..."
   set +e
-  HERMES_OUTPUT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${PROMPT}" 2>&1)
+  timeout "$TIMEOUT" "${HERMES_CMD}" chat -v -q "${PROMPT}" 2>&1
   EXIT_CODE=$?
   set -e
-  OUTPUT="${HERMES_OUTPUT:-}"
-  # Strip Python tracebacks from timeout kills — they're noise, not errors.
-  OUTPUT="$(printf '%s' "${OUTPUT}" | sed '/^Traceback.*/,/^KeyboardInterrupt/D' 2>/dev/null || printf '%s' "${OUTPUT}")"
-  echo "[belt_fed] Exit code: ${EXIT_CODE}"
-  echo ""
-  echo "${OUTPUT}"
 
   # The execution step did its work via tool calls (file edits, etc.).
   # Now verify whether the goal was met using a short prompt.
 
   # Step 2: Short verification — runs quickly since the prompt is just
-  # the first 200 chars of the goal.  The verification agent evaluates
-  # based on filesystem state (side effects from step 1).
+  # the first 200 chars of the goal. Stream it so user sees the response.
   VERIFY_PROMPT="I gave you this goal: '${GOAL_SUMMARY}'. Was it completed? Answer ONLY YES or NO."
   echo ""
   echo "--- Verification ---"
   set +e
-  VERIFY_OUTPUT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${VERIFY_PROMPT}" 2>&1)
+  RESULT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat -q "${VERIFY_PROMPT}" 2>&1)
   VEXIT_CODE=$?
   set -e
-  RESULT="${VERIFY_OUTPUT:-}"
-  # Strip same traceback noise from verification output
-  RESULT="$(printf '%s' "${RESULT}" | sed -r '/^Exception ignored/,/^KeyboardInterrupt/d; /^Traceback/,/^KeyboardInterrupt/d' 2>/dev/null || printf '%s' "${RESULT}")"
-  echo "${RESULT}"
 
   # Step 3: Parse for YES or NO
   TRIMMED=$(printf '%s' "${RESULT}" | head -1 | tr -d '[:space:]')

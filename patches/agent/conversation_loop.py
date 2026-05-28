@@ -181,6 +181,7 @@ _NEW_REVIEW_TRIGGER = (
 _modified_src = _modified_src.replace(_OLD_REVIEW_TRIGGER, _NEW_REVIEW_TRIGGER)
 
 # -- Replacement D: include last assistant response in prefetch query -------
+#              and store it on the agent for the training log
 _modified_src = _modified_src.replace(
     '            _query = original_user_message if isinstance(original_user_message, str) else ""',
     '            _query = original_user_message if isinstance(original_user_message, str) else ""\n'
@@ -193,7 +194,8 @@ _modified_src = _modified_src.replace(
             '                    if isinstance(_asst_reasoning, str) and _asst_reasoning.strip():\n'
             '                        _asst_text = _asst_reasoning.strip() + "\\n\\n" + (_asst_text or "")\n'
             '                    if isinstance(_asst_text, str) and _asst_text.strip():\n'
-            '                        _query = _asst_text.strip() + "\\n" + _query',
+            '                        _query = _asst_text.strip() + "\\n" + _query\n'
+            '            agent._last_prefetch_query = _query  # training log needs the raw query',
 )
 
 # Execute the modified function source using the real module's namespace

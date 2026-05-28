@@ -490,6 +490,43 @@ def _run_fact_scoring(
         _safe_bg_print(
             f"  \u26a0\ufe0f Fact scoring: couldn't score {len(evaluations)} fact(s)", agent
         )
+
+    # ── Log training datum to separate training.db ───────────────────
+    prefetch_query = getattr(agent, "_last_prefetch_query", "") or conversation_text
+    session_id = getattr(agent, "session_id", "")
+    try:
+        import sqlite3
+        from pathlib import Path
+        train_conn = sqlite3.connect(
+            str(Path.home() / ".hermes" / "training.db"), timeout=5.0
+        )
+        train_conn.execute(
+            "CREATE TABLE IF NOT EXISTS training_events ("
+            "event_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "query_text TEXT NOT NULL, "
+            "fact_id INTEGER NOT NULL, "
+            "trust_delta REAL NOT NULL, "
+            "session_id TEXT DEFAULT '', "
+            "logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        for ev in evaluations:
+            fid = ev.get("fact_id")
+            if not isinstance(fid, int):
+                continue
+            td = round(float(ev.get("trust_delta", 0.0) or 0.0), 5)
+            train_conn.execute(
+                "INSERT INTO training_events (query_text, fact_id, trust_delta, session_id) "
+                "VALUES (?, ?, ?, ?)",
+                (prefetch_query, fid, td, session_id),
+            )
+        train_conn.commit()
+        train_conn.close()
+        _safe_bg_print(
+            f"  \U0001f4be Training database: logged {len(evaluations)} fact evaluation(s)", agent
+        )
+    except Exception:
+        pass  # non-critical logging
+
     return ok
 
 

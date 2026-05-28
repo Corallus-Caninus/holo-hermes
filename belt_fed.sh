@@ -91,7 +91,7 @@ while true; do
   echo ""
   echo "--- Verification ---"
   set +e
-  RESULT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat -q "${VERIFY_PROMPT}" 2>&1)
+  RESULT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat -Q -q "${VERIFY_PROMPT}" 2>&1)
   VEXIT_CODE=$?
   set -e
   echo "${RESULT}"

@@ -6,33 +6,27 @@ set -euo pipefail
 #
 # Usage:
 #   ./belt_fed.sh "<goal/task prompt>"
-#
-# For large prompts, pipe via stdin (avoids shell arg limits):
 #   cat prompt.txt | ./belt_fed.sh
 #
 # Environment overrides:
 #   HERMES_LAUNCHER    — Hermes command
 #                        (default: sibling fully_automatic_holographic)
-#   HERMES_QUIET       -Q for quiet (default), empty for verbose
 #   BELT_FED_TIMEOUT   — per-attempt timeout in seconds (default: 600 = 10m)
 #
 # The script:
 #   1. Sends the prompt to Hermes (non-interactive, quiet mode)
-#   2. Sends a verification prompt that asks if the task goal was completed
-#   3. The verification model MUST respond with ONLY "YES" or "NO"
-#   4. If NO  → go back to step 1
-#   5. If YES → exit success
+#   2. Sends a short verification prompt ("was it done? answer YES/NO")
+#   3. If NO  → go back to step 1
+#   4. If YES → exit success
 
 # ---------------------------------------------------------------------------
 # Resolve the repo root so belt_fed works from any working directory
-# (including when symlinked / copied elsewhere).
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 HERMES_CMD="${HERMES_LAUNCHER:-$SCRIPT_DIR/fully_automatic_holographic}"
-# Quiet mode: -Q by default. Set HERMES_QUIET=0 to see full output.
-case "${HERMES_QUIET:-1}" in 0|false|no) QUIET="" ;; *) QUIET="-Q" ;; esac
 TIMEOUT="${BELT_FED_TIMEOUT:-600}"   # 10 minutes default
+QUIET="-Q"
 
 # ---------------------------------------------------------------------------
 # Read the goal prompt: from first argument, or stdin if piped
@@ -59,7 +53,7 @@ if [ -z "$PROMPT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Short summary (first 200 chars) for the verification prompt
+# Short summary (first line, max 200 chars) for the verification prompt
 # ---------------------------------------------------------------------------
 GOAL_SUMMARY="$(printf '%s' "$PROMPT" | head -c 200)"
 echo "[belt_fed] Goal: ${GOAL_SUMMARY}..."
@@ -73,20 +67,38 @@ while true; do
   echo "========================================"
 
   # Step 1: Run the goal prompt through Hermes (with timeout).
-  # Pass via -q with the prompt as a quoted argument. Stderr to /dev/null
-  # to suppress shutdown-traceback noise from timeout kills.
+  # In -Q mode, hermes suppresses all tool-call progress output.
+  # Only the final model response goes to stdout. Stderr has the
+  # session_id banner.  We capture both and print stdout so the
+  # user can see what the model ultimately produced.
   echo "[belt_fed] Running Hermes (up to ${TIMEOUT}s)..."
-  OUTPUT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${PROMPT}" 2>/dev/null || true)
+  set +e
+  HERMES_OUTPUT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${PROMPT}" 2>&1)
   EXIT_CODE=$?
+  set -e
+  OUTPUT="${HERMES_OUTPUT:-}"
+  # Strip Python tracebacks from timeout kills — they're noise, not errors.
+  OUTPUT="$(printf '%s' "${OUTPUT}" | sed '/^Traceback.*/,/^KeyboardInterrupt/D' 2>/dev/null || printf '%s' "${OUTPUT}")"
   echo "[belt_fed] Exit code: ${EXIT_CODE}"
   echo ""
   echo "${OUTPUT}"
 
-  # Step 2: Build a short verification prompt and run it
-  VERIFY_PROMPT="I gave you this goal: '${GOAL_SUMMARY}'. Was it completed successfully? Answer ONLY YES or NO."
+  # The execution step did its work via tool calls (file edits, etc.).
+  # Now verify whether the goal was met using a short prompt.
+
+  # Step 2: Short verification — runs quickly since the prompt is just
+  # the first 200 chars of the goal.  The verification agent evaluates
+  # based on filesystem state (side effects from step 1).
+  VERIFY_PROMPT="I gave you this goal: '${GOAL_SUMMARY}'. Was it completed? Answer ONLY YES or NO."
   echo ""
   echo "--- Verification ---"
-  RESULT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${VERIFY_PROMPT}" 2>/dev/null || true)
+  set +e
+  VERIFY_OUTPUT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat ${QUIET} -q "${VERIFY_PROMPT}" 2>&1)
+  VEXIT_CODE=$?
+  set -e
+  RESULT="${VERIFY_OUTPUT:-}"
+  # Strip same traceback noise from verification output
+  RESULT="$(printf '%s' "${RESULT}" | sed -r '/^Exception ignored/,/^KeyboardInterrupt/d; /^Traceback/,/^KeyboardInterrupt/d' 2>/dev/null || printf '%s' "${RESULT}")"
   echo "${RESULT}"
 
   # Step 3: Parse for YES or NO

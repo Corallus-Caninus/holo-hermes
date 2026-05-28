@@ -32,7 +32,7 @@ if [ -z "$HERMES_CMD" ]; then
     HERMES_CMD="hermes"
   fi
 fi
-TIMEOUT="${BELT_FED_TIMEOUT:-600}"   # 10 minutes default
+TIMEOUT="${BELT_FED_TIMEOUT:-5400}"   # 1.5 hours default
 
 # ---------------------------------------------------------------------------
 # Read the goal prompt: from first argument, or stdin if piped

@@ -94,6 +94,7 @@ while true; do
   RESULT=$(timeout "$TIMEOUT" "${HERMES_CMD}" chat -q "${VERIFY_PROMPT}" 2>&1)
   VEXIT_CODE=$?
   set -e
+  echo "${RESULT}"
 
   # Step 3: Parse for YES or NO
   TRIMMED=$(printf '%s' "${RESULT}" | head -1 | tr -d '[:space:]')

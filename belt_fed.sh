@@ -24,7 +24,14 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-HERMES_CMD="${HERMES_LAUNCHER:-$SCRIPT_DIR/fully_automatic_holographic}"
+HERMES_CMD="${HERMES_LAUNCHER:-}"
+if [ -z "$HERMES_CMD" ]; then
+  if [ -x "$SCRIPT_DIR/fully_automatic_holographic" ]; then
+    HERMES_CMD="$SCRIPT_DIR/fully_automatic_holographic"
+  else
+    HERMES_CMD="hermes"
+  fi
+fi
 TIMEOUT="${BELT_FED_TIMEOUT:-600}"   # 10 minutes default
 QUIET="-Q"
 

@@ -47,13 +47,13 @@ allows the system to learn conversational dynamics like "the user keeps correcti
 me on this topic — dampen those fact scores" or "this preference was affirmed
 multiple times — amplify related facts."
 
-Implementation note: the server process must persist the RWKV-7 model instance
-(and thus its hidden state) across multiple HTTP requests within the same session.
-The client (`compute_delta`) sends a `session_id` field alongside the query text.
-The server maintains a dict of `session_id → (model_state, conversation_counter)`
-and resets the state when a new `session_id` is seen (or when the counter exceeds
-a max-conversation-length threshold, at which point the hidden state is zeroed
-to avoid stale context bleeding across unrelated conversations).
+Implementation detail: the server maintains a dict of `session_id → hidden_state`
+for in-flight conversations. Each call to `compute_delta(text, session_id)` looks up
+or creates the state tensor for that session, runs the RWKV-7 forward pass (which
+updates the state in-place), and returns the delta vector. When a session ends, the
+entry is simply deleted — there is no need to explicitly reset or zero the state.
+RWKV's recurrent architecture handles long contexts gracefully via lossy compression;
+there is no artificial turn limit.
 
 ---
 

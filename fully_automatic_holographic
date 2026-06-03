@@ -13,7 +13,6 @@ Or symlink it into your PATH:
 
 import os
 import re
-import subprocess
 import sys
 
 
@@ -59,7 +58,72 @@ for _p in _path_additions:
         _cur_path = _p + os.pathsep + _cur_path
 os.environ["PATH"] = _cur_path
 
-# ── 3. Inject patches ──────────────────────────────────────────────────────────
+# ── 3. Determine API mode (zen / go) and load credentials ─────────────────────
+
+import yaml
+
+_HERMES_MODE = os.environ.get("HERMES_MODE", "").strip().lower()
+_HERMES_CONFIG = os.path.expanduser("~/.hermes/config.yaml")
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_go_key_file = os.path.join(_script_dir, "opencode-go-key")
+_has_go_key = os.path.isfile(_go_key_file)
+
+# Mode resolution:
+#   HERMES_MODE=zen  → force Zen endpoint (free tiers, Big Pickle, etc.)
+#   HERMES_MODE=go   → force Go endpoint
+#   default          → Go if opencode-go-key exists, else leave config as-is
+if _HERMES_MODE == "go" or (_HERMES_MODE != "zen" and _has_go_key):
+    _use_go = True
+elif _HERMES_MODE == "zen":
+    _use_go = False
+else:
+    _use_go = None  # don't touch config
+
+# Load API key from opencode-go-key — same key works for both Zen & Go
+# (Go is a subscription tier within Zen; the key is shared.)
+if _has_go_key:
+    with open(_go_key_file) as _fk:
+        _key = _fk.read().strip()
+    if _key:
+        os.environ.setdefault("OPENCODE_API_KEY", _key)
+
+# ── 4. Patch Hermes config for the selected mode ─────────────────────────────
+
+if _use_go is not None and os.path.isfile(_HERMES_CONFIG):
+    with open(_HERMES_CONFIG) as _fc:
+        _cfg = yaml.safe_load(_fc) or {}
+    _changed = False
+    _base = _cfg.setdefault("model", {})
+    _old_url = _base.get("base_url", "")
+    _old_model = _base.get("default", "")
+    _mode_label = "go" if _use_go else "zen"
+
+    _new_url = _old_url
+    _new_model = _old_model
+
+    if _use_go:
+        _new_url = _old_url.replace("opencode.ai/zen/v1", "opencode.ai/zen/go/v1")
+        if _old_model.endswith("-free"):
+            _new_model = _old_model[: -len("-free")]
+    else:
+        _new_url = _old_url.replace("opencode.ai/zen/go/v1", "opencode.ai/zen/v1")
+
+    if _new_url != _old_url:
+        _base["base_url"] = _new_url
+        _changed = True
+
+    if _new_model != _old_model:
+        _base["default"] = _new_model
+        _changed = True
+        print(f"[holo] Switched model: {_old_model} -> {_new_model}", file=sys.stderr)
+
+    if _changed:
+        print(f"[holo] Switched to {_mode_label} endpoint: {_base['base_url']}", file=sys.stderr)
+        with open(_HERMES_CONFIG, "w") as _fc:
+            yaml.dump(_cfg, _fc, default_flow_style=False, sort_keys=False)
+
+# ── 5. Inject patches ──────────────────────────────────────────────────────────
 
 PATCHES_DIR = os.path.expanduser("~/.hermes/patches")
 if PATCHES_DIR not in sys.path:
@@ -77,7 +141,7 @@ try:
 except Exception:
     pass  # may not exist in all Hermes versions
 
-# ── 4. Launch Hermes ───────────────────────────────────────────────────────────
+# ── 6. Launch Hermes ───────────────────────────────────────────────────────────
 
 from hermes_cli.main import main
 

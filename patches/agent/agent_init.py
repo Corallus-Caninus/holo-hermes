@@ -121,7 +121,27 @@ if _init_agent:
         setattr(_real_mod, "init_agent", globals()["init_agent"])
 
 # ---------------------------------------------------------------------------
-# 4. Keep __all__
+# 4. Install provider switch hook after init_agent runs
+# ---------------------------------------------------------------------------
+# Wrap init_agent to install provider switch hook after client is ready
+_original_init_agent = globals()["init_agent"]
+
+def _patched_init_agent(*args, **kwargs):
+    """Run original init_agent, then install the provider switch hook."""
+    result = _original_init_agent(*args, **kwargs)
+    try:
+        from agent.provider_switch import install as _install_switch
+        import agent as _agent_mod
+        _install_switch(_agent_mod)
+    except Exception as _exc:
+        _patch_log.warning("Provider switch hook not installed: %s", _exc)
+    return result
+
+globals()["init_agent"] = _patched_init_agent
+setattr(_real_mod, "init_agent", _patched_init_agent)
+
+# ---------------------------------------------------------------------------
+# 5. Keep __all__
 # ---------------------------------------------------------------------------
 if hasattr(_real_mod, "__all__"):
     __all__ = _real_mod.__all__

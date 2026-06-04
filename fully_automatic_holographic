@@ -63,7 +63,8 @@ os.environ["PATH"] = _cur_path
 import yaml
 
 _HERMES_MODE = os.environ.get("HERMES_MODE", "").strip().lower()
-_HERMES_CONFIG = os.path.expanduser("~/.hermes/config.yaml")
+_HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+_HERMES_CONFIG = os.path.join(_HERMES_HOME, "config.yaml")
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _go_key_file = os.path.join(_script_dir, "opencode-go-key")

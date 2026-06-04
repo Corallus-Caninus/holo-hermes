@@ -38,20 +38,27 @@ PROVIDER_CONFIG = {
         "base_url": "https://opencode.ai/zen/go/v1",
         "needs_reinit": False,
     },
+    "gemini": {
+        "api_mode": "chat_completions",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "needs_reinit": False,
+    },
 }
 
 
 def _resolve_provider_config(provider: str, model: str) -> dict:
     """Resolve the full provider config for a given provider name and model."""
     cfg = dict(PROVIDER_CONFIG.get(provider, {}))
-    
+
     if provider == "openrouter":
         cfg["base_url"] = "https://openrouter.ai/api/v1"
     elif provider in ("opencode", "opencode-zen"):
         cfg["base_url"] = "https://opencode.ai/zen/v1"
     elif provider == "opencode-go":
         cfg["base_url"] = "https://opencode.ai/zen/go/v1"
-    
+    elif provider == "gemini":
+        cfg["base_url"] = "https://generativelanguage.googleapis.com/v1beta/openai"
+
     # Model mapping
     cfg["model"] = model
     cfg["provider"] = provider
@@ -77,32 +84,32 @@ def _read_switch_request() -> dict | None:
 
 def _apply_switch(payload: dict, agent_module) -> bool:
     """Apply a provider switch to the running agent module.
-    
+
     Updates agent.model, agent.provider, agent.base_url, agent.api_mode
     and reconfigures the OpenAI client in-place.
-    
+
     Returns True if the switch was applied successfully.
     """
     import openai
-    
+
     provider = payload.get("provider", "")
     model = payload.get("model", "")
-    
+
     if not provider or not model:
         _log.warning("Invalid switch payload: missing provider or model")
         return False
-    
+
     cfg = _resolve_provider_config(provider, model)
-    
+
     # Update module-level attributes
     old_provider = getattr(agent_module, "provider", "")
     old_model = getattr(agent_module, "model", "")
-    
+
     agent_module.model = model
     agent_module.provider = provider
     agent_module.base_url = cfg["base_url"]
     agent_module.api_mode = cfg["api_mode"]
-    
+
     # Update the OpenAI client in-place
     client = getattr(agent_module, "client", None)
     if client is not None:
@@ -114,10 +121,12 @@ def _apply_switch(payload: dict, agent_module) -> bool:
                 new_key = os.environ.get("OPENCODE_API_KEY", "")
             elif provider == "openrouter":
                 new_key = os.environ.get("OPENROUTER_API_KEY", "")
+            elif provider == "gemini":
+                new_key = os.environ.get("GEMINI_API_KEY", "")
         if new_key:
             client.api_key = new_key
             agent_module.api_key = new_key
-    
+
     # Restart the credential pool if applicable (for OpenRouter routing)
     pool = getattr(agent_module, "_credential_pool", None)
     if pool is not None:
@@ -125,13 +134,13 @@ def _apply_switch(payload: dict, agent_module) -> bool:
             pool.clear()
         except Exception:
             pass
-    
+
     # Update environment so subprocess calls see the new provider
     os.environ["LLM_PROVIDER"] = provider
     os.environ["LLM_MODEL"] = model
     if cfg.get("base_url"):
         os.environ["LLM_URL"] = cfg["base_url"]
-    
+
     _log.info(
         "Provider switch: %s/%s -> %s/%s (base_url=%s)",
         old_provider, old_model, provider, model, cfg["base_url"],
@@ -159,14 +168,14 @@ def _wrap_create(original_create, agent_module):
 
 def install(agent_module):
     """Install the provider switch hook into the agent's OpenAI client.
-    
+
     Call this after agent.client has been initialized.
     """
     client = getattr(agent_module, "client", None)
     if client is None:
         _log.warning("agent.client not initialized yet — cannot install switch hook")
         return False
-    
+
     try:
         original = client.chat.completions.create
         client.chat.completions.create = _wrap_create(original, agent_module)

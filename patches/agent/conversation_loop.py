@@ -198,6 +198,20 @@ _modified_src = _modified_src.replace(
             '            agent._last_prefetch_query = _query  # training log needs the raw query',
 )
 
+# -- Replacement D: flat 1-second retry for local server (both retry paths) -
+# Exponential backoff (2-60s or 5-120s) is wrong for local single-server setups —
+# the server is either up or down, and retrying in ~1s is always correct.
+_modified_src = _modified_src.replace(
+    '                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)',
+    '                    wait_time = 1.0',
+)
+
+# Also patch the main API error retry path (different base_delay)
+_modified_src = _modified_src.replace(
+    '                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)',
+    '                wait_time = 1.0',
+)
+
 # Execute the modified function source using the real module's namespace
 _globals_for_exec = _real_mod.__dict__.copy()
 _globals_for_exec["__name__"] = __name__

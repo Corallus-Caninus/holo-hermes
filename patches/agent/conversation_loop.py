@@ -198,7 +198,45 @@ _modified_src = _modified_src.replace(
             '            agent._last_prefetch_query = _query  # training log needs the raw query',
 )
 
-# -- Replacement D: flat 1-second retry for local server (both retry paths) -
+# -- Replacement E: compression timeout (120s) — fail gracefully instead of hanging
+_modified_src = _modified_src.replace(
+    '                    original_len = len(messages)\n'
+    '                    messages, active_system_prompt = agent._compress_context(\n'
+    '                        messages, system_message, approx_tokens=approx_tokens,\n'
+    '                        task_id=effective_task_id,\n'
+    '                    )',
+    '                    original_len = len(messages)\n'
+    '                    # ── Compression with 120s timeout (runs in background thread) ──\n'
+    '                    import threading as _thr\n'
+    '                    _compress_result = []\n'
+    '                    _compress_error = []\n'
+    '                    def _do_compress():\n'
+    '                        try:\n'
+    '                            _compress_result.append(agent._compress_context(\n'
+    '                                messages, system_message,\n'
+    '                                approx_tokens=approx_tokens,\n'
+    '                                task_id=effective_task_id,\n'
+    '                            ))\n'
+    '                        except Exception as _ce:\n'
+    '                            _compress_error.append(_ce)\n'
+    '                    _ct = _thr.Thread(target=_do_compress, daemon=True)\n'
+    '                    _ct.start()\n'
+    '                    _ct.join(timeout=120)\n'
+    '                    if _ct.is_alive():\n'
+    '                        agent._vprint(f"{agent.log_prefix}⏱️ Compression timed out (120s) — persisting session for continuation retry", force=True)\n'
+    '                        agent._persist_session(messages, conversation_history)\n'
+    '                        return {\n'
+    '                            "messages": messages,\n'
+    '                            "completed": False,\n'
+    '                            "api_calls": api_call_count,\n'
+    '                            "error": "Compression timed out (120s)",\n'
+    '                            "partial": True,\n'
+    '                            "failed": True,\n'
+    '                        }\n'
+    '                    if _compress_error:\n'
+    '                        raise _compress_error[0]\n'
+    '                    messages, active_system_prompt = _compress_result[0]',
+)
 # Exponential backoff (2-60s or 5-120s) is wrong for local single-server setups —
 # the server is either up or down, and retrying in ~1s is always correct.
 _modified_src = _modified_src.replace(

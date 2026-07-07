@@ -17,6 +17,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Disable MCP circuit breaker — consecutive failure cooldown wastes
+# API calls on free-tier models for no benefit in this use case.
+import tools.mcp_tool as _mcp_tool
+_mcp_tool._CIRCUIT_BREAKER_THRESHOLD = 9999
+
 # Import names that the exec'd run_conversation function references
 # from the real conversation_loop module's module-level scope.
 from agent.process_bootstrap import _install_safe_stdio
@@ -62,27 +67,35 @@ for _attr in dir(_real_mod):
 # ---------------------------------------------------------------------------
 _orig_src = inspect.getsource(_real_mod.run_conversation)
 
-# -- Replacement A: inject prefetch into ephemeral_system_prompt -----------
-_OLD_PREFETCH_LINE = (
-    '            _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""'
-)
-_NEW_PREFETCH_BLOCK = (
-    '            _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""\n'
-    '            # Inject prefetched memory into ephemeral system prompt\n'
-    '            if _ext_prefetch_cache and hasattr(agent, "ephemeral_system_prompt"):\n'
-    '                _mem_block = _ext_prefetch_cache\n'
-    '                _existing = agent.ephemeral_system_prompt or ""\n'
-    '                if _existing:\n'
-    '                    _mem_block = _mem_block + "\\n\\n" + _existing\n'
-    '                agent.ephemeral_system_prompt = _mem_block'
-)
-_modified_src = _orig_src.replace(_OLD_PREFETCH_LINE, _NEW_PREFETCH_BLOCK)
+# -- Replacement A: skip broken main replacement, use fallback --
+_OLD_PREFETCH_LINE = "THIS_PATTERN_WILL_NEVER_MATCH_IN_THE_REAL_SOURCE_xxxxxxxxxx"
+_modified_src = _orig_src
 
 if _modified_src == _orig_src:
     _modified_src = _modified_src.replace(
         'agent._memory_manager.prefetch_all(_query) or ""',
         'agent._memory_manager.prefetch_all(_query) or ""\n'
-        '            # Inject prefetched memory into ephemeral system prompt\n'
+        '            agent._last_prefetch_query = _query\n'
+        '            try:\n'
+        '                _override = agent._config.get("plugins", {}).get("hermes-memory-store", {}).get("prefetch_query_override", "")\n'
+        '                if _override:\n'
+        '                    agent._last_prefetch_query = _override\n'
+        '            except Exception:\n'
+        '                pass\n'
+        '            agent._last_prefetch_facts = []\n'
+        '            _all_provs = getattr(agent._memory_manager, "_providers", None) or getattr(agent._memory_manager, "providers", [])\n'
+        '            for _prov in _all_provs:\n'
+        '                if hasattr(_prov, "_last_raw_results"):\n'
+        '                    agent._last_prefetch_facts = _prov._last_raw_results\n'
+        '                    break\n'
+        '            # Reformat as FACTS section\n'
+        '            if agent._last_prefetch_facts:\n'
+        '                _facts_lines = ["== FACTS =="]\n'
+        '                for _r in agent._last_prefetch_facts:\n'
+        '                    _t = _r.get("trust_score", 0)\n'
+        '                    _c = _r.get("content", "")\n'
+        '                    _facts_lines.append(f"- [{_t:.1f}] {_c}")\n'
+        '                _ext_prefetch_cache = "\\n".join(_facts_lines)\n'
         '            if _ext_prefetch_cache and hasattr(agent, "ephemeral_system_prompt"):\n'
         '                _mem_block = _ext_prefetch_cache\n'
         '                _existing = agent.ephemeral_system_prompt or ""\n'
@@ -99,7 +112,27 @@ if _modified_src == _orig_src:
             _spaces = " " * _indent
             _new_line = (
                 _line + "\n" + _spaces
-                + '# Inject prefetched memory into ephemeral system prompt\n'
+                + 'agent._last_prefetch_query = _query\n'
+                + _spaces + 'try:\n'
+                + _spaces + '    _override = agent._config.get("plugins", {}).get("hermes-memory-store", {}).get("prefetch_query_override", "")\n'
+                + _spaces + '    if _override:\n'
+                + _spaces + '        agent._last_prefetch_query = _override\n'
+                + _spaces + 'except Exception:\n'
+                + _spaces + '    pass\n'
+                + _spaces + 'agent._last_prefetch_facts = []\n'
+                + _spaces + '_all_provs = getattr(agent._memory_manager, "_providers", None) or getattr(agent._memory_manager, "providers", [])\n'
+                + _spaces + 'for _prov in _all_provs:\n'
+                + _spaces + '    if hasattr(_prov, "_last_raw_results"):\n'
+                + _spaces + '        agent._last_prefetch_facts = _prov._last_raw_results\n'
+                + _spaces + '        break\n'
+                + _spaces + '# Reformat as FACTS section\n'
+                + _spaces + 'if agent._last_prefetch_facts:\n'
+                + _spaces + '    _facts_lines = ["== FACTS =="]\n'
+                + _spaces + '    for _r in agent._last_prefetch_facts:\n'
+                + _spaces + '        _t = _r.get("trust_score", 0)\n'
+                + _spaces + '        _c = _r.get("content", "")\n'
+                + _spaces + '        _facts_lines.append(f"- [{_t:.1f}] {_c}")\n'
+                + _spaces + '    _ext_prefetch_cache = "\\n".join(_facts_lines)\n'
                 + _spaces + 'if _ext_prefetch_cache and hasattr(agent, "ephemeral_system_prompt"):\n'
                 + _spaces + '    _mem_block = _ext_prefetch_cache\n'
                 + _spaces + '    _existing = agent.ephemeral_system_prompt or ""\n'
@@ -144,11 +177,10 @@ _OLD_REVIEW_TRIGGER = (
     '            pass  # Background review is best-effort\n'
 )
 _NEW_REVIEW_TRIGGER = (
-    '    # Background memory review — runs AFTER the response is delivered\n'
-    '    # so it never competes with the user\'s task for model attention.\n'
-    '    # Fires every turn with only the current turn\'s messages.\n'
-    '    # Uses non-daemon threads so the review completes before process exit.\n'
-    '    if final_response and not interrupted:\n'
+    '    # Fact pipeline — runs AFTER the response is delivered\n'
+    '    # Extracts new facts from the turn and scores prefetched facts\n'
+    '    # in a single LLM call. Replaces background memory review.\n'
+    '    if final_response and not interrupted and (agent._memory_enabled or agent._memory_manager is not None):\n'
     '        try:\n'
     '            # Extract only the current turn (last user + assistant msgs)\n'
     '            _current_turn_msgs = []\n'
@@ -156,49 +188,15 @@ _NEW_REVIEW_TRIGGER = (
     '                _current_turn_msgs.insert(0, _m)\n'
     '                if _m.get("role") == "user":\n'
     '                    break\n'
-    '            from agent.background_review import spawn_background_review_thread\n'
-    '            _bg_target, _ = spawn_background_review_thread(\n'
-    '                agent, _current_turn_msgs,\n'
-    '                review_memory=True,\n'
-    '                review_skills=False,\n'
-    '            )\n'
+    '            from agent.fact_pipeline import build_fact_pipeline_target\n'
+    '            _fact_target = build_fact_pipeline_target(agent, _current_turn_msgs)\n'
     '            import threading as _thr\n'
-    '            _thr.Thread(target=_bg_target, daemon=False, name="bg-review").start()\n'
+    '            _thr.Thread(target=_fact_target, daemon=False, name="fact-pipeline").start()\n'
     '        except Exception:\n'
-    '            pass  # Background review is best-effort\n'
-    '        # Spawn fact evaluation thread in parallel (if pending data)\n'
-    '        try:\n'
-    '            import os as _os\n'
-    '            from hermes_constants import get_hermes_home\n'
-    '            if _os.path.isfile(str(get_hermes_home() / ".pending_fact_eval.json")):\n'
-    '                from agent.background_review import spawn_fact_evaluation_thread\n'
-    '                _fact_target, _ = spawn_fact_evaluation_thread(agent, _current_turn_msgs)\n'
-    '                import threading as _thr2\n'
-    '                _thr2.Thread(target=_fact_target, daemon=False, name="bg-fact-eval").start()\n'
-    '        except Exception:\n'
-    '            pass  # Fact evaluation is best-effort\n'
+    '            pass  # Fact pipeline is best-effort\n'
 )
-_modified_src = _modified_src.replace(_OLD_REVIEW_TRIGGER, _NEW_REVIEW_TRIGGER)
-
-# -- Replacement D: include last assistant response in prefetch query -------
-#              and store it on the agent for the training log
-_modified_src = _modified_src.replace(
-    '            _query = original_user_message if isinstance(original_user_message, str) else ""',
-    '            _query = original_user_message if isinstance(original_user_message, str) else ""\n'
-            '            # Include last assistant response for multi-turn context\n'
-            '            if messages and len(messages) >= 2:\n'
-            '                _last_asst_msg = messages[-2]\n'
-            '                if isinstance(_last_asst_msg, dict) and _last_asst_msg.get("role") == "assistant":\n'
-            '                    _asst_text = _last_asst_msg.get("content", "")\n'
-            '                    _asst_reasoning = _last_asst_msg.get("reasoning", "")\n'
-            '                    if isinstance(_asst_reasoning, str) and _asst_reasoning.strip():\n'
-            '                        _asst_text = _asst_reasoning.strip() + "\\n\\n" + (_asst_text or "")\n'
-            '                    if isinstance(_asst_text, str) and _asst_text.strip():\n'
-            '                        _query = _asst_text.strip() + "\\n" + _query\n'
-            '            agent._last_prefetch_query = _query  # training log needs the raw query',
-)
-
-# -- Replacement E: compression timeout (120s) — fail gracefully instead of hanging
+# -- Replacement E: compression timeout (600s) — fail gracefully instead of hanging.
+# 120s is too short for cloud APIs like Gemini free tier.
 _modified_src = _modified_src.replace(
     '                    original_len = len(messages)\n'
     '                    messages, active_system_prompt = agent._compress_context(\n'
@@ -206,7 +204,7 @@ _modified_src = _modified_src.replace(
     '                        task_id=effective_task_id,\n'
     '                    )',
     '                    original_len = len(messages)\n'
-    '                    # ── Compression with 120s timeout (runs in background thread) ──\n'
+    '                    # ── Compression with 600s timeout (runs in background thread) ──\n'
     '                    import threading as _thr\n'
     '                    _compress_result = []\n'
     '                    _compress_error = []\n'
@@ -221,15 +219,15 @@ _modified_src = _modified_src.replace(
     '                            _compress_error.append(_ce)\n'
     '                    _ct = _thr.Thread(target=_do_compress, daemon=True)\n'
     '                    _ct.start()\n'
-    '                    _ct.join(timeout=120)\n'
+    '                    _ct.join(timeout=600)\n'
     '                    if _ct.is_alive():\n'
-    '                        agent._vprint(f"{agent.log_prefix}⏱️ Compression timed out (120s) — persisting session for continuation retry", force=True)\n'
+    '                        agent._vprint(f"{agent.log_prefix}⏱️ Compression timed out (600s) — persisting session for continuation retry", force=True)\n'
     '                        agent._persist_session(messages, conversation_history)\n'
     '                        return {\n'
     '                            "messages": messages,\n'
     '                            "completed": False,\n'
     '                            "api_calls": api_call_count,\n'
-    '                            "error": "Compression timed out (120s)",\n'
+    '                            "error": "Compression timed out (600s)",\n'
     '                            "partial": True,\n'
     '                            "failed": True,\n'
     '                        }\n'
@@ -239,16 +237,45 @@ _modified_src = _modified_src.replace(
 )
 # Exponential backoff (2-60s or 5-120s) is wrong for local single-server setups —
 # the server is either up or down, and retrying in ~1s is always correct.
+# For cloud APIs (Gemini free tier, etc.), respect _retry_after from the API.
 _modified_src = _modified_src.replace(
     '                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)',
     '                    wait_time = 1.0',
 )
 
-# Also patch the main API error retry path (different base_delay)
+# Also patch the main API error retry path — keep _retry_after if the API
+# provides it (Gemini returns retryDelay on 429), otherwise use 1s.
 _modified_src = _modified_src.replace(
     '                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)',
-    '                wait_time = 1.0',
+    '                wait_time = _retry_after if _retry_after else 1.0',
 )
+
+# -- # -- Replacement F: parse JSON error body for Google's RetryInfo.retryDelay ---------
+# Gemini puts retryDelay in the JSON body (google.rpc.RetryInfo), not HTTP headers.
+# Append body parsing after the header-based _retry_after extraction.
+_modified_src = _modified_src.replace(
+    '                            except (TypeError, ValueError):\n'
+    '                                pass\n'
+    '                wait_time = _retry_after if _retry_after else',
+    '                            except (TypeError, ValueError):\n'
+    '                                pass\n'
+    '                        # Also check JSON error body for Google\'s RetryInfo format\n'
+    '                        if _retry_after is None and is_rate_limited:\n'
+    '                            _err_body = getattr(api_error, "body", None)\n'
+    '                            if _err_body is not None and "retryDelay" in str(_err_body):\n'
+    '                                import json as _json\n'
+    '                                try:\n'
+    '                                    _err_data = _json.loads(_err_body) if isinstance(_err_body, str) else _err_body\n'
+    '                                    for _detail in _err_data.get("error", {}).get("details", []):\n'
+    '                                        if _detail.get("@type", "").endswith("RetryInfo"):\n'
+    '                                            _rd = _detail.get("retryDelay", "")\n'
+    '                                            if _rd.endswith("s"):\n'
+    '                                                _retry_after = min(float(_rd[:-1]), 120.0)\n'
+    '                                except Exception:\n'
+    '                                    pass\n'
+    '                wait_time = _retry_after if _retry_after else',
+)
+
 
 # Execute the modified function source using the real module's namespace
 _globals_for_exec = _real_mod.__dict__.copy()
@@ -263,7 +290,16 @@ except Exception as _exec_err:
     raise
 
 # Replace run_conversation in our namespace with the patched version
-run_conversation = _globals_for_exec.get("run_conversation", _real_mod.run_conversation)
+_patched_fn = _globals_for_exec.get("run_conversation")
+if _patched_fn is None:
+    import logging as _cl
+    _cl.getLogger("bg_check").error(
+        "PATCHED run_conversation NOT FOUND in exec namespace — using ORIGINAL. "
+        "One or more .replace() patterns failed to match."
+    )
+    run_conversation = _real_mod.run_conversation
+else:
+    run_conversation = _patched_fn
 _real_mod.run_conversation = run_conversation
 
 # ---------------------------------------------------------------------------

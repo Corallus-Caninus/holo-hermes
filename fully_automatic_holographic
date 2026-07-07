@@ -1,23 +1,16 @@
 #!/nix/store/37mly3rqq15i0axhcx3258bl34l51psp-hermes-agent-env/bin/python3.12
 """Patched Hermes launcher — activates holographic-fork patches before boot.
-
 Auto-discovers Nix store paths from the ``hermes`` command in PATH, so it
 works on any Nix Hermes installation without hardcoding store hashes.
-
 Usage:
     ~/Code/hermes/holo-hermes/fully_automatic_holographic [args...]
-
 Or symlink it into your PATH:
     ln -sf ~/Code/hermes/holo-hermes/fully_automatic_holographic ~/.local/bin/hermes
 """
-
 import os
 import re
 import sys
-
-
 # ── 1. Discover Nix Hermes installation ────────────────────────────────────────
-
 def _find_nix_hermes():
     """Find the Nix ``hermes`` bash wrapper in PATH, skipping our custom wrapper."""
     local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
@@ -28,122 +21,171 @@ def _find_nix_hermes():
         ):
             return candidate
     return None
-
-
 nix_hermes = _find_nix_hermes()
 if nix_hermes is None:
     print("Error: cannot find Nix Hermes installation in PATH", file=sys.stderr)
     sys.exit(1)
-
 # ── 2. Extract env vars from the Nix bash wrapper ─────────────────────────────
-
 with open(nix_hermes) as _fh:
     _content = _fh.read()
-
 for _match in re.finditer(
     r"""export\s+(HERMES_\w+)='([^']*)'""", _content
 ):
     os.environ.setdefault(_match.group(1), _match.group(2))
-
 # PATH additions (ripgrep, git, openssh, ffmpeg, clipboard, etc.)
 _path_additions: list[str] = []
 for _match in re.finditer(
     r"""PATH=\$PATH'(/nix/store/[^']+)'""", _content
 ):
     _path_additions.append(_match.group(1))
-
 _cur_path = os.environ.get("PATH", "")
 for _p in _path_additions:
     if _p not in _cur_path:
         _cur_path = _p + os.pathsep + _cur_path
 os.environ["PATH"] = _cur_path
-
-# ── 3. Determine API mode (zen / go) and load credentials ─────────────────────
-
+# LD_LIBRARY_PATH for numpy C extensions (libstdc++ etc.)
+# Auto-discover GCC lib path from Nix store.
+_ld_additions: list[str] = []
+for _match in re.finditer(
+    r"export\s+LD_LIBRARY_PATH=['\"]([^'\"]+)['\"]", _content
+):
+    _ld_additions.append(_match.group(1))
+# Also try auto-discovering GCC lib from the store
+if not _ld_additions:
+    import glob as _glob
+    _gcc_libs = sorted(_glob.glob("/nix/store/*-gcc-*-lib/lib"))  # type: ignore[name-defined]
+    if _gcc_libs:
+        _ld_additions.append(_gcc_libs[-1])
+# Merge into existing LD_LIBRARY_PATH
+_cur_ld = os.environ.get("LD_LIBRARY_PATH", "")
+for _p in _ld_additions:
+    if _p not in _cur_ld:
+        _cur_ld = _p + os.pathsep + _cur_ld if _cur_ld else _p
+if _cur_ld:
+    os.environ["LD_LIBRARY_PATH"] = _cur_ld
+# ── 3. Always use Go API (opencode-go for all models) ──────────────────────────
 import yaml
-
-_HERMES_MODE = os.environ.get("HERMES_MODE", "").strip().lower()
 _HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 _HERMES_CONFIG = os.path.join(_HERMES_HOME, "config.yaml")
-
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _go_key_file = os.path.join(_script_dir, "opencode-go-key")
 _has_go_key = os.path.isfile(_go_key_file)
-
-# Mode resolution:
-#   HERMES_MODE=zen  → force Zen endpoint (free tiers, Big Pickle, etc.)
-#   HERMES_MODE=go   → force Go endpoint
-#   default          → Go if opencode-go-key exists, else leave config as-is
-if _HERMES_MODE == "go" or (_HERMES_MODE != "zen" and _has_go_key):
-    _use_go = True
-elif _HERMES_MODE == "zen":
-    _use_go = False
-else:
-    _use_go = None  # don't touch config
-
-# Load API key from opencode-go-key — same key works for both Zen & Go
-# (Go is a subscription tier within Zen; the key is shared.)
+if not _has_go_key:
+    _go_key_file = os.path.join(os.path.dirname(_script_dir), "opencode-go-key")
+    _has_go_key = os.path.isfile(_go_key_file)
+# Load API key from opencode-go-key or env vars
 if _has_go_key:
     with open(_go_key_file) as _fk:
         _key = _fk.read().strip()
-    if _key:
-        os.environ.setdefault("OPENCODE_API_KEY", _key)
-
-# ── 4. Patch Hermes config for the selected mode ─────────────────────────────
-
-if _use_go is not None and os.path.isfile(_HERMES_CONFIG):
+elif os.environ.get("OPENCODE_GO_API_KEY"):
+    _key = os.environ["OPENCODE_GO_API_KEY"]
+elif os.environ.get("OPENCODE_API_KEY"):
+    _key = os.environ["OPENCODE_API_KEY"]
+else:
+    _key = ""
+if _key:
+    os.environ.setdefault("OPENCODE_API_KEY", _key)
+    os.environ.setdefault("OPENCODE_GO_API_KEY", _key)
+    os.environ.setdefault("OPENCODE_ZEN_API_KEY", _key)
+else:
+    print("[holo] WARNING: No API key found", file=sys.stderr)
+# ── 3a. Respect explicit provider override ───────────────────────────────
+# ApplyPilot sets LLM_PROVIDER when it copies config.yaml to a temp dir
+# and runs Hermes with a specific provider (opencode, opencode-zen,
+# opencode-go, gemini, local, etc.). Skip patching in ANY of those cases
+# so the explicit choice is preserved. When no override is set, default
+# to opencode-go.
+_HERMES_INFERENCE_PROVIDER = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+_LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").strip()
+_SKIP_PATCHING = bool(_HERMES_INFERENCE_PROVIDER) or bool(_LLM_PROVIDER)
+# ── 4. Patch Hermes config to always use opencode-go by default ───────────
+# The opencode-go provider's built-in base URL is https://opencode.ai/zen/go/v1.
+# DO NOT set an explicit base_url — it overrides the provider's correct URL
+# (the api. subdomain variant returns empty responses for all models).
+# Skip patching when an explicit provider override is set (HERMES_INFERENCE_PROVIDER
+# or LLM_PROVIDER), so explicit provider choices are preserved.
+if not _SKIP_PATCHING and os.path.isfile(_HERMES_CONFIG):
     with open(_HERMES_CONFIG) as _fc:
         _cfg = yaml.safe_load(_fc) or {}
     _changed = False
     _base = _cfg.setdefault("model", {})
-    _old_url = _base.get("base_url", "")
-    _old_model = _base.get("default", "")
-    _mode_label = "go" if _use_go else "zen"
-
-    _new_url = _old_url
-    _new_model = _old_model
-
-    if _use_go:
-        _new_url = _old_url.replace("opencode.ai/zen/v1", "opencode.ai/zen/go/v1")
-        if _old_model.endswith("-free"):
-            _new_model = _old_model[: -len("-free")]
-    else:
-        _new_url = _old_url.replace("opencode.ai/zen/go/v1", "opencode.ai/zen/v1")
-
-    if _new_url != _old_url:
-        _base["base_url"] = _new_url
+    if _base.get("provider", "") != "opencode-go":
+        _base["provider"] = "opencode-go"
         _changed = True
-
-    if _new_model != _old_model:
-        _base["default"] = _new_model
+    if "base_url" in _base:
+        del _base["base_url"]
         _changed = True
-        print(f"[holo] Switched model: {_old_model} -> {_new_model}", file=sys.stderr)
-
+    # Force maximum reasoning effort for deepseek-v4-flash on opencode-go
+    _agent = _cfg.setdefault("agent", {})
+    if _agent.get("reasoning_effort", "") != "xhigh":
+        _agent["reasoning_effort"] = "xhigh"
+        _changed = True
+    # Enable holographic memory provider for automatic fact injection
+    _mem = _cfg.setdefault("memory", {})
+    if _mem.get("provider", "") != "holographic":
+        _mem["provider"] = "holographic"
+        _mem["memory_enabled"] = False
+        _mem["user_profile_enabled"] = False
+        _changed = True
+    # ── Model-specific presets ─────────────────────────────────
+    # All Nemotron models: temperature=0.6, top_p=0.95
+    _model_name = (
+        _cfg.get("model", {}).get("default", "")
+        or os.environ.get("LLM_MODEL", "")
+    )
+    if "nemotron" in _model_name.lower():
+        _base["temperature"] = 0.6
+        _base["top_p"] = 0.95
+        _changed = True
     if _changed:
-        print(f"[holo] Switched to {_mode_label} endpoint: {_base['base_url']}", file=sys.stderr)
+        print("[holo] Switched to opencode-go provider", file=sys.stderr)
         with open(_HERMES_CONFIG, "w") as _fc:
             yaml.dump(_cfg, _fc, default_flow_style=False, sort_keys=False)
-
 # ── 5. Inject patches ──────────────────────────────────────────────────────────
-
 PATCHES_DIR = os.path.expanduser("~/.hermes/patches")
 if PATCHES_DIR not in sys.path:
     sys.path.insert(0, PATCHES_DIR)
-
 # Pre-import agent from patches to cache it before the boot chain runs.
 # Without this, hermes_cli/config.py -> providers -> nous plugin -> agent
 # loads agent from the Nix store (sys.path gets reordered mid-chain).
 import agent  # noqa: F401
-
 # Also pre-import agent.portal_tags (the specific import the Nous plugin needs)
 # so the boot chain finds it cached and doesn't try to import agent again.
 try:
     import agent.portal_tags  # noqa: F401
 except Exception:
     pass  # may not exist in all Hermes versions
-
-# ── 6. Launch Hermes ───────────────────────────────────────────────────────────
-
+# ── 6. Load memory proxy BEFORE boot chain ────────────────────────────────
+# The boot chain (hermes_cli.main) imports plugins.memory, which would lock
+# in the Nix-store version. Pre-import the patches proxy first so the cached
+# module has our _MEMORY_PLUGINS_DIR override.
+try:
+    import plugins.memory  # noqa: F401
+except Exception:
+    pass
+# ── 7. Launch Hermes ───────────────────────────────────────────────────────────
 from hermes_cli.main import main
-
+# ── 8. Re-assert patches dir in sys.path (boot chain reorders it) ────────────
+PATCHES_DIR = os.path.expanduser("~/.hermes/patches")
+if PATCHES_DIR in sys.path:
+    sys.path.remove(PATCHES_DIR)
+sys.path.insert(0, PATCHES_DIR)
+# Also ensure numpy 3.12 path is available for the holographic HRR module
+_NUMPY_PATH = "/nix/store/d6x7mb4fbhms6mshya1x0qp9s37wv08q-python3.12-numpy-2.4.4/lib/python3.12/site-packages"
+if os.path.isdir(_NUMPY_PATH) and _NUMPY_PATH not in sys.path:
+    sys.path.insert(0, _NUMPY_PATH)
+# Re-cache agent and plugins.memory so patches take effect
+import agent  # noqa: F811, F401
+# Force plugins.memory to reload through patches proxy (already loaded above)
+try:
+    import plugins.memory  # noqa: F401
+except Exception:
+    pass
+# ── 9. Clear cached Nix-store holographic modules from boot chain ──────────
+# The boot chain (hermes_cli.main) imported plugins.memory.holographic from
+# the Nix store before our proxy could hook it.  Wipe it so the provider
+# discovery loads our patched version instead.
+for _hk in list(sys.modules.keys()):
+    if "holographic" in _hk:
+        del sys.modules[_hk]
 sys.exit(main())

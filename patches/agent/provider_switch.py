@@ -161,6 +161,11 @@ def _wrap_create(original_create, agent_module):
         if _reasoning_effort:
             extra = kwargs.pop("extra_body", {}) or {}
             extra["reasoning_effort"] = _reasoning_effort
+            # Gemini uses "thinking" (not "reasoning_effort") — send both
+            # so both OpenAI and Gemini models get reasoning enabled.
+            provider = getattr(agent_module, "provider", "")
+            if provider == "gemini":
+                extra["thinking"] = {"type": "enabled", "budget_tokens": 16384}
             kwargs["extra_body"] = extra
         return original_create(*args, **kwargs)
     return _switched_create

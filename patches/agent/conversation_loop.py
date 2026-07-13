@@ -22,6 +22,12 @@ from typing import Any, Dict, List, Optional
 import tools.mcp_tool as _mcp_tool
 _mcp_tool._CIRCUIT_BREAKER_THRESHOLD = 9999
 
+# Pre-import the rich output renderer so it's available at exec time
+# (the boot chain may overwrite sys.modules['agent'], making
+# from agent.rich_output import ... fail inside the exec'd function).
+from agent.rich_output import render_response as _render_response
+from agent.rich_output import render_final as _render_final
+
 # Import names that the exec'd run_conversation function references
 # from the real conversation_loop module's module-level scope.
 from agent.process_bootstrap import _install_safe_stdio
@@ -77,9 +83,13 @@ if _modified_src == _orig_src:
         'agent._memory_manager.prefetch_all(_query) or ""\n'
         '            agent._last_prefetch_query = _query\n'
         '            try:\n'
-        '                _override = agent._config.get("plugins", {}).get("hermes-memory-store", {}).get("prefetch_query_override", "")\n'
-        '                if _override:\n'
-        '                    agent._last_prefetch_query = _override\n'
+        '                for _aprov in getattr(getattr(agent, "_memory_manager", None), "providers", []):\n'
+        '                    _apn = getattr(_aprov, "_provider_name", "") or ""\n'
+        '                    if "holographic" in _apn.lower():\n'
+        '                        _override = getattr(_aprov, "_config", {}).get("prefetch_query_override", "")\n'
+        '                        if _override:\n'
+        '                            agent._last_prefetch_query = _override\n'
+        '                        break\n'
         '            except Exception:\n'
         '                pass\n'
         '            agent._last_prefetch_facts = []\n'
@@ -114,9 +124,13 @@ if _modified_src == _orig_src:
                 _line + "\n" + _spaces
                 + 'agent._last_prefetch_query = _query\n'
                 + _spaces + 'try:\n'
-                + _spaces + '    _override = agent._config.get("plugins", {}).get("hermes-memory-store", {}).get("prefetch_query_override", "")\n'
-                + _spaces + '    if _override:\n'
-                + _spaces + '        agent._last_prefetch_query = _override\n'
+                + _spaces + '    for _aprov in getattr(getattr(agent, "_memory_manager", None), "providers", []):\n'
+                + _spaces + '        _apn = getattr(_aprov, "_provider_name", "") or ""\n'
+                + _spaces + '        if "holographic" in _apn.lower():\n'
+                + _spaces + '            _override = getattr(_aprov, "_config", {}).get("prefetch_query_override", "")\n'
+                + _spaces + '            if _override:\n'
+                + _spaces + '                agent._last_prefetch_query = _override\n'
+                + _spaces + '            break\n'
                 + _spaces + 'except Exception:\n'
                 + _spaces + '    pass\n'
                 + _spaces + 'agent._last_prefetch_facts = []\n'
@@ -180,7 +194,8 @@ _NEW_REVIEW_TRIGGER = (
     '    # Fact pipeline — runs AFTER the response is delivered\n'
     '    # Extracts new facts from the turn and scores prefetched facts\n'
     '    # in a single LLM call. Replaces background memory review.\n'
-    '    if final_response and not interrupted and (agent._memory_enabled or agent._memory_manager is not None):\n'
+    '    _in_applypilot = bool(os.environ.get("HERMES_APPLYPILOT_MODE"))\n'
+    '    if (final_response or _in_applypilot) and not interrupted and (agent._memory_enabled or agent._memory_manager is not None):\n'
     '        try:\n'
     '            # Extract only the current turn (last user + assistant msgs)\n'
     '            _current_turn_msgs = []\n'
@@ -188,13 +203,25 @@ _NEW_REVIEW_TRIGGER = (
     '                _current_turn_msgs.insert(0, _m)\n'
     '                if _m.get("role") == "user":\n'
     '                    break\n'
-    '            from agent.fact_pipeline import build_fact_pipeline_target\n'
-    '            _fact_target = build_fact_pipeline_target(agent, _current_turn_msgs)\n'
-    '            import threading as _thr\n'
-    '            _thr.Thread(target=_fact_target, daemon=False, name="fact-pipeline").start()\n'
+    '            from agent.background_review import _build_conversation_text, _run_fact_extraction, _run_fact_scoring\n'
+    '            if _in_applypilot:\n'
+    '                # In ApplyPilot mode the agent replies are tool-only (empty text),\n'
+    '                # making final_response falsy. Pass the full conversation after\n'
+    '                # the system + first-user setup message so the extractor has\n'
+    '                # context about what happened across the whole job.\n'
+    '                _conv_text = _build_conversation_text(messages[2:])\n'
+    '            else:\n'
+    '                _conv_text = _build_conversation_text(_current_turn_msgs)\n'
+    '            _extracted = _run_fact_extraction(agent, _conv_text)\n'
+    '            if _extracted:\n'
+    '                import threading as _thr\n'
+    '                _thr.Thread(target=_run_fact_scoring, args=(agent, _conv_text), daemon=False, name="fact-scoring").start()\n'
     '        except Exception:\n'
     '            pass  # Fact pipeline is best-effort\n'
 )
+# Wire up the review trigger replacement
+_modified_src = _modified_src.replace(_OLD_REVIEW_TRIGGER, _NEW_REVIEW_TRIGGER)
+
 # -- Replacement E: compression timeout (600s) — fail gracefully instead of hanging.
 # 120s is too short for cloud APIs like Gemini free tier.
 _modified_src = _modified_src.replace(
@@ -276,9 +303,44 @@ _modified_src = _modified_src.replace(
     '                wait_time = _retry_after if _retry_after else',
 )
 
+# -- Replacement G: render assistant response with Rich Markdown syntax highlighting --
+_modified_src = _modified_src.replace(
+    '            # Handle assistant response\n'
+    '            if assistant_message.content and not agent.quiet_mode:\n'
+    '                if agent.verbose_logging:\n'
+    '                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content}")\n'
+    '                else:\n'
+    '                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{\'...\' if len(assistant_message.content) > 100 else \'\'}")\n',
+    '            # Handle assistant response\n'
+    '            if assistant_message.content and not agent.quiet_mode:\n'
+    '                try:\n'
+    '                    _render_response(agent, assistant_message.content, log_prefix=agent.log_prefix)\n'
+    '                except Exception:\n'
+    '                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content}")\n',
+)
+
+
+# -- Replacement H: apply Rich syntax highlighting to final response --
+_modified_src = _modified_src.replace(
+    '    # Build result with interrupt info if applicable\n'
+    '    result = {\n'
+    '        "final_response": final_response,\n',
+    '    # Apply Rich syntax highlighting to final response\n'
+    '    _rich_display = render_final(final_response)\n'
+    '    if _rich_display and _rich_display != final_response:\n'
+    '        final_response = _rich_display\n'
+    '\n'
+    '    # Build result with interrupt info if applicable\n'
+    '    result = {\n'
+    '        "final_response": final_response,\n',
+)
+
 
 # Execute the modified function source using the real module's namespace
 _globals_for_exec = _real_mod.__dict__.copy()
+# Inject the rich output renderer — imported at module load before boot chain
+_globals_for_exec["_render_response"] = _render_response
+_globals_for_exec["render_final"] = _render_final
 _globals_for_exec["__name__"] = __name__
 try:
     exec(_modified_src, _globals_for_exec)

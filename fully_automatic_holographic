@@ -10,6 +10,12 @@ Or symlink it into your PATH:
 import os
 import re
 import sys
+# ── Parse --gpu flag before anything else — default to CPU for embeddings ────
+_EMBED_GPU = "--gpu" in sys.argv
+if _EMBED_GPU:
+    sys.argv.remove("--gpu")
+if not os.environ.get("HERMES_EMBED_DEVICE"):
+    os.environ["HERMES_EMBED_DEVICE"] = "cuda" if _EMBED_GPU else "cpu"
 # ── 1. Discover Nix Hermes installation ────────────────────────────────────────
 def _find_nix_hermes():
     """Find the Nix ``hermes`` bash wrapper in PATH, skipping our custom wrapper."""

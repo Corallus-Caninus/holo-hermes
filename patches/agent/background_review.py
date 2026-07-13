@@ -203,20 +203,18 @@ def _build_conversation_text(messages_snapshot: List[Dict]) -> str:
         if isinstance(content, list):
             texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
             content = " ".join(texts)
-        # Include assistant reasoning/thinking — this is where the model
+        # Include full assistant reasoning/thinking — this is where the model
         # explicitly references prefetched facts ("from fact #47: ...")
         reasoning = m.get("reasoning", "")
-        if isinstance(reasoning, str) and reasoning.strip():
-            reasoning = reasoning.strip()[:1200]
-        else:
+        if not isinstance(reasoning, str) or not reasoning.strip():
             reasoning = ""
         if isinstance(content, str) and content.strip():
-            full = content.strip()[:800]
+            full = content.strip()
             if role == "assistant" and reasoning:
-                full = f"[thinking]: {reasoning}\n\n{full}"
+                full = f"[thinking]: {reasoning.strip()}\n\n{full}"
             parts.append(f"[{role}]: {full}")
         elif reasoning:
-            parts.append(f"[{role}]: [thinking]: {reasoning}")
+            parts.append(f"[{role}]: [thinking]: {reasoning.strip()}")
     return "\n\n".join(parts) if parts else "(empty turn)"
 
 
@@ -488,14 +486,12 @@ def _run_fact_extraction(
         }
         if _add_fact(agent, entry["content"], entry["category"], entry["tags"]):
             saved_facts.append(entry)
-            saved_previews.append(_preview(content))
+            saved_previews.append(content)
 
     n_saved = len(saved_facts)
     if saved_previews:
-        items = " \u00b7 ".join(f'"{p}"' for p in saved_previews[:3])
-        if len(saved_previews) > 3:
-            items += f" \u00b7 +{len(saved_previews) - 3} more"
-        _safe_bg_print(f"  \U0001f4be Fact extraction: saved {n_saved} fact(s): {items}", agent)
+        items = "\n".join(f"  \"{p}\"" for p in saved_previews)
+        _safe_bg_print(f"  \U0001f4be Fact extraction: saved {n_saved} fact(s):\n{items}", agent)
     elif n_saved > 0:
         _safe_bg_print(
             f"  \u26a0\ufe0f Fact extraction: saved {n_saved}/{len(new_facts)}"
@@ -535,7 +531,11 @@ def _run_fact_scoring(
         if _is_ap:
             _jc = ""
             try:
-                _jc = agent._config.get("plugins", {}).get("hermes-memory-store", {}).get("prefetch_query_override", "")
+                for _bgp in getattr(getattr(agent, "_memory_manager", None), "providers", []):
+                    _bpn = getattr(_bgp, "_provider_name", "") or ""
+                    if "holographic" in _bpn.lower():
+                        _jc = getattr(_bgp, "_config", {}).get("prefetch_query_override", "")
+                        break
             except Exception:
                 pass
             _prompt_name = "_APPLYPILOT_SCORING_PROMPT"
@@ -753,7 +753,14 @@ def _run_review_in_thread(
         if not agent._memory_manager:
             return
 
-        conversation_text = _build_conversation_text(messages_snapshot)
+        # Only use the last user+assistant turn — not the full conversation history
+        _current_turn = []
+        for _m in reversed(messages_snapshot):
+            _current_turn.insert(0, _m)
+            if _m.get("role") == "user":
+                break
+
+        conversation_text = _build_conversation_text(_current_turn)
 
         # Run extraction and scoring in parallel
         import threading as _t

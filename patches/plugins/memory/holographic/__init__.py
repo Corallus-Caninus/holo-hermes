@@ -39,6 +39,16 @@ def _dbgn(msg, *args):
     """Debug logging with automatic % formatting — no-op when _DEBUG is False."""
     if _DEBUG:
         _log.info("PATCH: " + (msg % args if args else msg))
+def _debug_log_path() -> str:
+    """Return the debug log path for this Hermes instance.
+    Priority: HOLOGRAPHIC_DEBUG_LOG env var -> HERMES_HOME -> ~/.hermes."""
+    _env_path = _os.environ.get("HOLOGRAPHIC_DEBUG_LOG", "")
+    if _env_path:
+        return _env_path
+    _hh = _os.environ.get("HERMES_HOME", "")
+    if _hh:
+        return _os.path.join(_hh, "holographic_debug.log")
+    return _os.path.expanduser("~/.hermes/holographic_debug.log")
 # ═══════════════════════════════════════════════════════════════════════════════
 # 0. Make numpy + faiss available before loading the real module
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -256,7 +266,7 @@ if _HolographicMemoryProvider is not None:
         # Log config keys unconditionally for ApplyPilot debugging
         try:
             import json as _ic
-            _ilog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+            _ilog = _debug_log_path()
             with open(_ilog, "a", encoding="utf-8") as _if:
                 _if.write(_ic.dumps({
                     "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -362,7 +372,7 @@ if _HolographicMemoryProvider is not None:
             # Log diagnostic
             try:
                 import json as _dj
-                with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _df:
+                with open(_debug_log_path(), "a") as _df:
                     _df.write(_dj.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
                         "event": "faiss_init",
@@ -474,7 +484,7 @@ if _HolographicMemoryProvider is not None:
             # Write diagnostic before loading
             try:
                 import json as _jj
-                with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _f:
+                with open(_debug_log_path(), "a") as _f:
                     _f.write(_jj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                         "event": "bert_load_start",
                                         "faiss_index_ok": self._faiss_index is not None and self._faiss_index.index is not None}) + "\n")
@@ -484,7 +494,7 @@ if _HolographicMemoryProvider is not None:
                 _bert._load()
                 _dbg("BERT model loaded at startup")
                 import json as _jj
-                with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _f:
+                with open(_debug_log_path(), "a") as _f:
                     _f.write(_jj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                         "event": "bert_startup_load", "ok": True}) + "\n")
             except Exception as _e:
@@ -492,7 +502,7 @@ if _HolographicMemoryProvider is not None:
                 # Log the actual error to debug log
                 try:
                     import json as _jj
-                    with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _f:
+                    with open(_debug_log_path(), "a") as _f:
                         _f.write(_jj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                             "event": "bert_load_failed",
                                             "error": str(_e)[:200]}) + "\n")
@@ -733,7 +743,7 @@ if _HolographicMemoryProvider is not None:
                 # Log success
                 try:
                     import json as _rj
-                    with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _rf:
+                    with open(_debug_log_path(), "a") as _rf:
                         _rf.write(_rj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                              "event": "faiss_cache_load", "status": "ok",
                                              "ntotal": self._faiss_index.index.ntotal}) + "\n")
@@ -744,7 +754,7 @@ if _HolographicMemoryProvider is not None:
                 _dbg("FAISS cache load failed: %s — rebuilding", _e)
                 try:
                     import json as _rj
-                    with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _rf:
+                    with open(_debug_log_path(), "a") as _rf:
                         _rf.write(_rj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                              "event": "faiss_cache_load", "status": "fail",
                                              "error": str(_e)[:100]}) + "\n")
@@ -782,7 +792,7 @@ if _HolographicMemoryProvider is not None:
         # Log build result
         try:
             import json as _rj
-            with open(_os.path.expanduser("~/.hermes/holographic_debug.log"), "a") as _rf:
+            with open(_debug_log_path(), "a") as _rf:
                 _rf.write(_rj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                      "event": "faiss_build_result",
                                      "n_vectors": len(vectors),
@@ -881,14 +891,13 @@ if _HolographicMemoryProvider is not None:
         projections). 1536-dim vectors with 32K context window.
         Returns facts with _faiss_distance set (cosine similarity, -1 to 1).
         """
-        print(f"[holo] _faiss_search called: query={query[:80]!r} k={k}", flush=True)
         if not self._has_faiss or not self._faiss_index or not self._store:
             print(f"[holo] _faiss_search SKIPPED: _has_faiss={self._has_faiss} index={self._faiss_index is not None} store={self._store is not None}", flush=True)
             return []
             # Log why FAISS search was skipped
             try:
                 import json as _jj
-                _p = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _p = _debug_log_path()
                 with open(_p, "a") as _f:
                     _f.write(_jj.dumps({"timestamp": __import__("datetime").datetime.now().isoformat(),
                                         "event": "faiss_search_skipped",
@@ -903,7 +912,7 @@ if _HolographicMemoryProvider is not None:
             # Log which embedding instruction was used
             try:
                 import json as _ei
-                _elog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _elog = _debug_log_path()
                 with open(_elog, "a", encoding="utf-8") as _ef:
                     _ef.write(_ei.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -916,24 +925,17 @@ if _HolographicMemoryProvider is not None:
             # Validate query vector — GPU memory fragmentation can produce
             # NaN/Inf/zero vectors that corrupt FAISS search.
             import numpy as _npv
-            print(f"[holo] query_vec stats: shape={query_vec.shape} min={query_vec.min():.6f} max={query_vec.max():.6f} mean={query_vec.mean():.6f} nan={_npv.any(_npv.isnan(query_vec))} inf={_npv.any(_npv.isinf(query_vec))} zero={_npv.all(query_vec == 0)}", flush=True)
             # Embedding quality check: query vs same text as passage
             try:
                 _qv_passage = _bert.encode_passages(query)
-                _cos_same = float(_npv.dot(query_vec[0], _qv_passage[0]))
-                # Also check determinism: encode twice
                 _qv2 = _bert.encode_queries(query)
-                _cos_det = float(_npv.dot(query_vec[0], _qv2[0]))
-                print(f"[holo] embed quality: query_vs_passage(same_text)={_cos_same:.4f} deterministic={_cos_det:.4f}", flush=True)
-            except Exception as _eq:
-                print(f"[holo] embed quality check failed: {_eq}", flush=True)
+            except Exception:
+                pass
             if _npv.any(_npv.isnan(query_vec)) or _npv.any(_npv.isinf(query_vec)) or _npv.all(query_vec == 0):
                 _dbg("faiss_search: bad query vector (NaN/Inf/zero) — skipping")
                 return []
             results = self._faiss_index.search(query_vec, k=k)
-            print(f"[holo] FAISS search returned {len(results) if results else 0} results", flush=True)
             if not results:
-                print(f"[holo] FAISS search empty — skipping post-processing", flush=True)
                 return []
             fact_ids = [r[0] for r in results]
             distances = [r[1] for r in results]
@@ -987,7 +989,7 @@ if _HolographicMemoryProvider is not None:
             # ── Log override diagnostic ──────────────────────────────────
             try:
                 import json as _oj
-                _olog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _olog = _debug_log_path()
                 with open(_olog, "a", encoding="utf-8") as _of:
                     _of.write(_oj.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -1003,7 +1005,7 @@ if _HolographicMemoryProvider is not None:
         except Exception as _oe:
             try:
                 import json as _oj2
-                _olog2 = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _olog2 = _debug_log_path()
                 with open(_olog2, "a", encoding="utf-8") as _of2:
                     _of2.write(_oj2.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -1032,7 +1034,7 @@ if _HolographicMemoryProvider is not None:
             # Log diagnostic: why prefetch can't run
             try:
                 import json as _dj
-                _dlog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _dlog = _debug_log_path()
                 with open(_dlog, "a", encoding="utf-8") as _df:
                     _df.write(_dj.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -1072,7 +1074,7 @@ if _HolographicMemoryProvider is not None:
                 # Log diagnostic: all 3 axes returned nothing
                 try:
                     import json as _dj
-                    _dlog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                    _dlog = _debug_log_path()
                     with open(_dlog, "a", encoding="utf-8") as _df:
                         _df.write(_dj.dumps({
                             "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -1173,7 +1175,7 @@ if _HolographicMemoryProvider is not None:
             # Log retrieved facts for debugging
             try:
                 import json as _fj
-                _flog = _os.path.expanduser("~/.hermes/holographic_debug.log")
+                _flog = _debug_log_path()
                 with open(_flog, "a", encoding="utf-8") as _ff:
                     _ff.write(_fj.dumps({
                         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -1189,11 +1191,11 @@ if _HolographicMemoryProvider is not None:
                         } for r in top5],
                     }, ensure_ascii=False) + "\n")
                 # Also print to stderr so it's visible in Hermes output
-                print(f"[holo] FACTS INJECTED: {len(top5)} facts", flush=True)
-                for _fi in top5:
-                    _fc = _fi.get("content", "")[:100]
-                    _fcos = _fi.get("_faiss_distance", 0)
-                    print(f"[holo]   cos={_fcos:.4f} {_fc}", flush=True)
+                _fi_lines = "\n".join(
+                    f"    cos={_fi.get('_faiss_distance', 0):.4f}  {_fi.get('content', '')}"
+                    for _fi in top5
+                )
+                print(f"  \U0001f4be Facts injected: {len(top5)} facts\n{_fi_lines}", flush=True)
             except Exception:
                 pass
             # WRITE MARKER: facts were retrieved
@@ -1212,9 +1214,9 @@ if _HolographicMemoryProvider is not None:
             _warn("prefetch failed: %s", _e)
             # Log the failure to the turn debug log too
             try:
-                import json, os as _dbg_os
+                import json
                 from datetime import datetime
-                _dbg_log = _dbg_os.path.expanduser("~/.hermes/holographic_debug.log")
+                _dbg_log = _debug_log_path()
                 with open(_dbg_log, "a", encoding="utf-8") as _df:
                     _df.write(json.dumps({
                         "timestamp": datetime.now().isoformat(),
@@ -1310,7 +1312,7 @@ if _HolographicMemoryProvider is not None:
         _py_mtime = _os.path.getmtime(_py_path) if _os.path.exists(_py_path) else 0
         _pyc_mtime = _os.path.getmtime(_pyc_path) if _os.path.exists(_pyc_path) else 0
         _stale = _pyc_mtime > 0 and _py_mtime > _pyc_mtime
-        _ilog2 = _os.path.expanduser("~/.hermes/holographic_debug.log")
+        _ilog2 = _debug_log_path()
         with open(_ilog2, "a", encoding="utf-8") as _if2:
             _if2.write(json.dumps({
                 "timestamp": __import__("datetime").datetime.now().isoformat(),
